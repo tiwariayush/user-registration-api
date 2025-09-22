@@ -1,0 +1,98 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: usersdb
+      POSTGRES_USER: userapi
+      POSTGRES_PASSWORD: userapi_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d
+
+  mailer:
+    build:
+      context: ./mailer
+      dockerfile: Dockerfile
+    environment:
+      LOG_LEVEL: info
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/docs', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: ./app/Dockerfile
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
+      LOG_LEVEL: info
+      # DB config
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: usersdb
+      DB_USER: userapi
+      DB_PASSWORD: userapi_password
+      # Email service
+      EMAIL_API_BASE_URL: http://mailer:8081
+      EMAIL_TIMEOUT_SECONDS: 3
+      # Security / codes
+      CODE_TTL_SECONDS: 60
+      CODE_SALT_BYTES: 16
+      BCRYPT_ROUNDS: 12
+    depends_on:
+      - db
+      - mailer
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+
+  tests:
+    build:
+      context: .
+      dockerfile: ./app/Dockerfile
+    environment:
+      APP_BASE: http://app:8000
+      MAILER_BASE: http://mailer:8081
+    depends_on:
+      db:
+        condition: service_started
+      mailer:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    entrypoint: ["pytest", "-v", "-s", "--log-cli-level=INFO", "--log-cli-format=%(asctime)s [%(levelname)8s] %(name)s: %(message)s", "/srv/tests"]
+
+  lint:
+    build:
+      context: .
+      dockerfile: ./app/Dockerfile
+    working_dir: /srv
+    entrypoint: ["./lint.sh"]
+    profiles:
+      - tools
+
+  format:
+    build:
+      context: .
+      dockerfile: ./app/Dockerfile
+    working_dir: /srv
+    entrypoint: ["./format.sh"]
+    profiles:
+      - tools
+
+volumes:
+  db_data:
